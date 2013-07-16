@@ -20,8 +20,34 @@ type tldrItem struct {
 	Created float64
 }
 
+var subReddits = []string{
+	"funny",
+	"games",
+	"iama",
+	"aww",
+	"askreddit",
+	"worldnews",
+	"geek",
+	"nosleep",
+	"programming",
+	"pics",
+}
+
 func main() {
-	posts, err := reddit.SubredditHeadlines("askreddit")
+	x := 0
+	for {
+		result := RunBot(subReddits[x])
+		x = (x + 1) % len(subReddits)
+		if result {
+			time.Sleep(30 * time.Minute)
+		}
+	}
+}
+
+func RunBot(subReddit string) bool {
+	success := false
+	fmt.Printf("/r/%s\n", subReddit)
+	posts, err := reddit.SubredditHeadlines(subReddit)
 	handleError(err)
 
 	tldrItemList := list.New()
@@ -44,12 +70,15 @@ func main() {
 	}
 
 	if tldrItemList.Len() > 0 {
-		tweetItem := tldrItemList.Front()
+		tweetItem := tldrItemList.Back()
 		client := LogIn()
 		message := tweetItem.Value.(tldrItem).Content
-		fmt.Println(message)
+		fmt.Printf("Tweet: %s\n", message)
 		TweetMessage(message, client)
+		success = true
 	}
+
+	return success
 }
 
 func extractTLDR(body string) (bool, string) {
