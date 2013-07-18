@@ -1,4 +1,4 @@
-package main
+package tldrtweet
 
 import (
 	"container/list"
@@ -9,7 +9,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -21,70 +20,127 @@ type tldrItem struct {
 }
 
 var subReddits = []string{
+	"askreddit",
 	"funny",
+	"videos",
 	"games",
 	"iama",
 	"aww",
-	"askreddit",
 	"worldnews",
 	"geek",
 	"nosleep",
 	"programming",
 	"pics",
+	"gaming",
+	"technology",
+	"cyberpunk",
+	"science",
+	"woahdude",
 }
 
-func main() {
-	x := 0
+const (
+	// Maximum size of a tweet
+	tweetSize = 140
+	// 1 Tweet Per Hour * 24 Hours A Day * 7 Days A Week = 168
+	numberOfTweetsPerWeek = 168
+)
+
+var commentSet = map[string]bool{}
+var subRedditIndex = 0
+
+func RunBot() {
+	resetCommentSet()
 	for {
-		result := RunBot(subReddits[x])
-		x = (x + 1) % len(subReddits)
-		if result {
-			time.Sleep(30 * time.Minute)
+		success := crawlAndTweet(subReddits[subRedditIndex])
+		subRedditIndex = (subRedditIndex + 1) % len(subReddits)
+		if success {
+			break
 		}
 	}
 }
 
-func RunBot(subReddit string) bool {
-	success := false
-	fmt.Printf("/r/%s\n", subReddit)
-	posts, err := reddit.SubredditHeadlines(subReddit)
-	handleError(err)
+func resetCommentSet() {
+	if len(commentSet) >= numberOfTweetsPerWeek {
+		// Let the garbage collector take care of getting rid of the contents of the map
+		// by assigning the comment set to a new map
+		commentSet = make(map[string]bool)
+	}
+}
 
-	tldrItemList := list.New()
-	for _, post := range posts {
-		// Sleep for 2 seconds as a niave way to keep the number of hits down to a max of 30 a min		
-		time.Sleep(2 * time.Second)
-		comments, err := reddit.GetComments(post)
-		handleError(err)
-		// Simple search and print of tldr comments
-		for _, comment := range comments {
-			formattedBody := strings.ToLower(comment.Body)
-			found, sentence := extractTLDR(formattedBody)
-			// Only add tweetable items to the list of candidates, i.e. less than 140 characters
-			if found && len(sentence) < 140 {
-				foundItem := tldrItem{Content: sentence, Author: comment.Author, Created: comment.Created}
-				fmt.Printf("%v\n", foundItem)
-				tldrItemList.PushBack(foundItem)
+func crawlAndTweet(subReddit string) bool {
+	success := false
+	posts, err := reddit.SubredditHeadlines(subReddit)
+	fmt.Printf("Crawling /r/%s\n", subReddit)
+	if noError(err) {
+		tldrItemList := list.New()
+		for _, post := range posts {
+			// Sleep for 2 seconds as a niave way to keep the number of hits down to a max of 30 a min
+			time.Sleep(2 * time.Second)
+			comments, err := reddit.GetComments(post)
+			if noError(err) {
+				processComments(comments, tldrItemList)
+			}
+		}
+		success = tryTweetItems(tldrItemList)
+	}
+	return success
+}
+
+func tryTweetItems(list *list.List) bool {
+	success := false
+	if list.Len() > 0 {
+		for tweetItem := list.Front(); tweetItem != nil; tweetItem = tweetItem.Next() {
+			success = tryTweetComment(tweetItem.Value.(tldrItem).Content)
+			if success {
+				break
 			}
 		}
 	}
-
-	if tldrItemList.Len() > 0 {
-		tweetItem := tldrItemList.Back()
-		client := LogIn()
-		message := tweetItem.Value.(tldrItem).Content
-		fmt.Printf("Tweet: %s\n", message)
-		TweetMessage(message, client)
-		success = true
-	}
-
 	return success
+}
+
+func tryTweetComment(message string) bool {
+	success := false
+	if tryAddComment(message) {
+		fmt.Printf("Tweet: %s\n", message)
+		client, err := logIn()
+		if noError(err) {
+			err = tweetMessage(message, client)
+			if noError(err) {
+				success = true
+			}
+
+		}
+	}
+	return success
+}
+
+func tryAddComment(comment string) bool {
+	if commentSet[comment] {
+		return false
+	}
+	commentSet[comment] = true
+	return true
+}
+
+func processComments(comments reddit.Comments, list *list.List) {
+	// Simple search and print of tldr comments
+	for _, comment := range comments {
+		formattedBody := strings.ToLower(comment.Body)
+		found, sentence := extractTLDR(formattedBody)
+		// Only add tweetable items to the list of candidates, i.e. less than 140 characters
+		if found && len(sentence) < tweetSize {
+			foundItem := tldrItem{Content: sentence, Author: comment.Author, Created: comment.Created}
+			fmt.Printf("%v\n", foundItem)
+			list.PushBack(foundItem)
+		}
+	}
 }
 
 func extractTLDR(body string) (bool, string) {
 	bodyContent := strings.Fields(body)
 	// If tl;dr or tl dr exists within the body of the string
-	// stop at that index and extract out until either the end of 
+	// stop at that index and extract out until either the end of
 	// the string or the first period found
 	for i := 0; i < len(bodyContent); i++ {
 		if bodyContent[i] == "tl;dr" || bodyContent[i] == "tldr" {
@@ -104,40 +160,38 @@ func extractTLDR(body string) (bool, string) {
 	return false, ""
 }
 
-// The login, loading of credentials, and tweeting has been addapted from the example provided with github.com/kurrik/twittergo
-func LoadTwitterCredentials() (client *twittergo.Client, err error) {
+// The loading of credentials, the login, and tweeting functionality
+// has been addapted from the example provided with github.com/kurrik/twittergo
+func logIn() (client *twittergo.Client, err error) {
 	credentials, err := ioutil.ReadFile("CREDENTIALS")
-	handleError(err)
-	lines := strings.Split(string(credentials), "\n")
-	config := &oauth1a.ClientConfig{
-		ConsumerKey:    lines[0],
-		ConsumerSecret: lines[1],
+	if noError(err) {
+		lines := strings.Split(string(credentials), "\n")
+		config := &oauth1a.ClientConfig{
+			ConsumerKey:    lines[0],
+			ConsumerSecret: lines[1],
+		}
+		user := oauth1a.NewAuthorizedConfig(lines[2], lines[3])
+		client = twittergo.NewClient(config, user)
 	}
-	user := oauth1a.NewAuthorizedConfig(lines[2], lines[3])
-	client = twittergo.NewClient(config, user)
 	return
 }
 
-func LogIn() *twittergo.Client {
-	client, err := LoadTwitterCredentials()
-	handleError(err)
-	return client
-}
-
-func TweetMessage(message string, client *twittergo.Client) {
+func tweetMessage(message string, client *twittergo.Client) error {
 	data := url.Values{}
 	data.Set("status", message)
 	body := strings.NewReader(data.Encode())
 	req, err := http.NewRequest("POST", "/1.1/statuses/update.json", body)
-	handleError(err)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	_, err = client.SendRequest(req)
-	handleError(err)
+	if noError(err) {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		_, err = client.SendRequest(req)
+	}
+	return err
 }
 
-func handleError(err error) {
+func noError(err error) bool {
 	if err != nil {
 		fmt.Printf("%v", err)
-		os.Exit(1)
+		return false
 	}
+	return true
 }
