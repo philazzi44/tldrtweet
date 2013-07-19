@@ -41,8 +41,8 @@ var subReddits = []string{
 const (
 	// Maximum size of a tweet
 	tweetSize = 140
-	// 1 Tweet Per Hour * 24 Hours A Day * 7 Days A Week = 168
-	numberOfTweetsPerWeek = 168
+	// 24 Tweets Per Day * 7 Days A Week = 168 Tweets A Week
+	maxNumberOfTweets = 168
 )
 
 var commentSet = map[string]bool{}
@@ -60,7 +60,7 @@ func RunBot() {
 }
 
 func resetCommentSet() {
-	if len(commentSet) >= numberOfTweetsPerWeek {
+	if len(commentSet) >= maxNumberOfTweets {
 		// Let the garbage collector take care of getting rid of the contents of the map
 		// by assigning the comment set to a new map
 		commentSet = make(map[string]bool)
