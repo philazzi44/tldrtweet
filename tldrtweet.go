@@ -19,6 +19,12 @@ type tldrItem struct {
 	Created float64
 }
 
+type TweetBot struct {
+	CommentSet      map[string]bool
+	SubRedditIndex  int
+	CredentialsPath string
+}
+
 var subReddits = []string{
 	"askreddit",
 	"funny",
@@ -41,33 +47,42 @@ var subReddits = []string{
 const (
 	// Maximum size of a tweet
 	tweetSize = 140
-	// 1 Tweet Per Hour * 24 Hours A Day * 7 Days A Week = 168
+	// 1 Tweet Per Hour * 24 Hours A Day * 7 Days A Week = 168 Tweets a week
 	numberOfTweetsPerWeek = 168
 )
 
-var commentSet = map[string]bool{}
-var subRedditIndex = 0
-
-func RunBot() {
-	resetCommentSet()
-	for {
-		success := crawlAndTweet(subReddits[subRedditIndex])
-		subRedditIndex = (subRedditIndex + 1) % len(subReddits)
-		if success {
-			break
+func (bot *TweetBot) RunBot() {
+	if len(bot.CredentialsPath) < 1 {
+		fmt.Println("No twitter credentials specified!")
+	} else {
+		resetCommentSet(bot)
+		for {
+			success := crawlAndTweet(subReddits[bot.SubRedditIndex], bot)
+			bot.SubRedditIndex = (bot.SubRedditIndex + 1) % len(subReddits)
+			if success {
+				break
+			}
 		}
 	}
 }
 
-func resetCommentSet() {
-	if len(commentSet) >= numberOfTweetsPerWeek {
+func New() *TweetBot {
+	return &TweetBot{CommentSet: make(map[string]bool)}
+}
+
+func (bot *TweetBot) SetBotTwitterCredentialsPath(path string) {
+	bot.CredentialsPath = path
+}
+
+func resetCommentSet(bot *TweetBot) {
+	if len(bot.CommentSet) >= numberOfTweetsPerWeek {
 		// Let the garbage collector take care of getting rid of the contents of the map
 		// by assigning the comment set to a new map
-		commentSet = make(map[string]bool)
+		bot.CommentSet = make(map[string]bool)
 	}
 }
 
-func crawlAndTweet(subReddit string) bool {
+func crawlAndTweet(subReddit string, bot *TweetBot) bool {
 	success := false
 	posts, err := reddit.SubredditHeadlines(subReddit)
 	fmt.Printf("Crawling /r/%s\n", subReddit)
@@ -81,16 +96,16 @@ func crawlAndTweet(subReddit string) bool {
 				processComments(comments, tldrItemList)
 			}
 		}
-		success = tryTweetItems(tldrItemList)
+		success = tryTweetItems(tldrItemList, bot)
 	}
 	return success
 }
 
-func tryTweetItems(list *list.List) bool {
+func tryTweetItems(list *list.List, bot *TweetBot) bool {
 	success := false
 	if list.Len() > 0 {
 		for tweetItem := list.Front(); tweetItem != nil; tweetItem = tweetItem.Next() {
-			success = tryTweetComment(tweetItem.Value.(tldrItem).Content)
+			success = tryTweetComment(tweetItem.Value.(tldrItem).Content, bot)
 			if success {
 				break
 			}
@@ -99,11 +114,11 @@ func tryTweetItems(list *list.List) bool {
 	return success
 }
 
-func tryTweetComment(message string) bool {
+func tryTweetComment(message string, bot *TweetBot) bool {
 	success := false
-	if tryAddComment(message) {
+	if tryAddComment(message, bot) {
 		fmt.Printf("Tweet: %s\n", message)
-		client, err := logIn()
+		client, err := logIn(bot)
 		if noError(err) {
 			err = tweetMessage(message, client)
 			if noError(err) {
@@ -115,11 +130,11 @@ func tryTweetComment(message string) bool {
 	return success
 }
 
-func tryAddComment(comment string) bool {
-	if commentSet[comment] {
+func tryAddComment(comment string, bot *TweetBot) bool {
+	if bot.CommentSet[comment] {
 		return false
 	}
-	commentSet[comment] = true
+	bot.CommentSet[comment] = true
 	return true
 }
 
@@ -162,8 +177,8 @@ func extractTLDR(body string) (bool, string) {
 
 // The loading of credentials, the login, and tweeting functionality
 // has been addapted from the example provided with github.com/kurrik/twittergo
-func logIn() (client *twittergo.Client, err error) {
-	credentials, err := ioutil.ReadFile("CREDENTIALS")
+func logIn(bot *TweetBot) (client *twittergo.Client, err error) {
+	credentials, err := ioutil.ReadFile(bot.CredentialsPath)
 	if noError(err) {
 		lines := strings.Split(string(credentials), "\n")
 		config := &oauth1a.ClientConfig{
@@ -190,7 +205,7 @@ func tweetMessage(message string, client *twittergo.Client) error {
 
 func noError(err error) bool {
 	if err != nil {
-		fmt.Printf("%v", err)
+		fmt.Printf("Error: %v\n", err)
 		return false
 	}
 	return true
