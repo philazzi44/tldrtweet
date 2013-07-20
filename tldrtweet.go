@@ -58,7 +58,7 @@ func (bot *TweetBot) RunBot() {
 		resetCommentSet(bot)
 		for {
 			success := crawlAndTweet(subReddits[bot.SubRedditIndex], bot)
-			bot.SubRedditIndex = (bot.SubRedditIndex + 1) % len(subReddits)
+			bot.SubRedditIndex = (bot.SubRedditIndex + 1) % (len(subReddits) - 1)
 			if success {
 				break
 			}
