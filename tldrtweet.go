@@ -6,7 +6,6 @@ import (
 	"github.com/jzelinskie/reddit"
 	"github.com/kurrik/oauth1a"
 	"github.com/kurrik/twittergo"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,9 +19,10 @@ type tldrItem struct {
 }
 
 type TweetBot struct {
-	CommentSet      map[string]bool
-	SubRedditIndex  int
-	CredentialsPath string
+	CommentSet     map[string]bool
+	CommentList    *list.List
+	SubRedditIndex int
+	Credentials    string
 }
 
 var subReddits = []string{
@@ -52,7 +52,7 @@ const (
 )
 
 func (bot *TweetBot) RunBot() {
-	if len(bot.CredentialsPath) < 1 {
+	if len(bot.Credentials) < 1 {
 		fmt.Println("No twitter credentials specified!")
 	} else {
 		resetCommentSet(bot)
@@ -67,19 +67,37 @@ func (bot *TweetBot) RunBot() {
 }
 
 func New() *TweetBot {
-	return &TweetBot{CommentSet: make(map[string]bool)}
+	return &TweetBot{CommentSet: make(map[string]bool), CommentList: list.New()}
 }
 
-func (bot *TweetBot) SetBotTwitterCredentialsPath(path string) {
-	bot.CredentialsPath = path
+func (bot *TweetBot) SetBotTwitterCredentials(credentials string) {
+	bot.Credentials = credentials
 }
 
 func resetCommentSet(bot *TweetBot) {
-	if len(bot.CommentSet) >= maxNumberOfTweets {
-		// Let the garbage collector take care of getting rid of the contents of the map
-		// by assigning the comment set to a new map
-		bot.CommentSet = make(map[string]bool)
+	if bot.CommentList.Len() >= maxNumberOfTweets {
+		// Remove the 84 oldest tweets
+		for {
+			if bot.CommentList.Len() > (maxNumberOfTweets / 2) {
+				commentListItem := bot.CommentList.Front()
+				comment := commentListItem.Value.(string)
+				// Remove from both the set and the list
+				delete(bot.CommentSet, comment)
+				bot.CommentList.Remove(commentListItem)
+			} else {
+				break
+			}
+		}
 	}
+}
+
+func tryAddComment(comment string, bot *TweetBot) bool {
+	if bot.CommentSet[comment] {
+		return false
+	}
+	bot.CommentSet[comment] = true
+	bot.CommentList.PushFront(comment)
+	return true
 }
 
 func crawlAndTweet(subReddit string, bot *TweetBot) bool {
@@ -130,14 +148,6 @@ func tryTweetComment(message string, bot *TweetBot) bool {
 	return success
 }
 
-func tryAddComment(comment string, bot *TweetBot) bool {
-	if bot.CommentSet[comment] {
-		return false
-	}
-	bot.CommentSet[comment] = true
-	return true
-}
-
 func processComments(comments reddit.Comments, list *list.List) {
 	// Simple search and print of tldr comments
 	for _, comment := range comments {
@@ -178,9 +188,8 @@ func extractTLDR(body string) (bool, string) {
 // The loading of credentials, the login, and tweeting functionality
 // has been addapted from the example provided with github.com/kurrik/twittergo
 func logIn(bot *TweetBot) (client *twittergo.Client, err error) {
-	credentials, err := ioutil.ReadFile(bot.CredentialsPath)
-	if noError(err) {
-		lines := strings.Split(string(credentials), "\n")
+	if len(bot.Credentials) > 0 {
+		lines := strings.Split(string(bot.Credentials), "\n")
 		config := &oauth1a.ClientConfig{
 			ConsumerKey:    lines[0],
 			ConsumerSecret: lines[1],
