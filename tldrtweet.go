@@ -79,7 +79,7 @@ func resetCommentSet(bot *TweetBot) {
 		// Remove the 84 oldest tweets
 		for {
 			if bot.CommentList.Len() > (maxNumberOfTweets / 2) {
-				commentListItem := bot.CommentList.Front()
+				commentListItem := bot.CommentList.Back()
 				comment := commentListItem.Value.(string)
 				// Remove from both the set and the list
 				delete(bot.CommentSet, comment)
