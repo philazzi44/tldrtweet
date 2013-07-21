@@ -2,15 +2,21 @@ package tldrtweet
 
 import (
 	"container/list"
+	"errors"
 	"fmt"
 	"github.com/jzelinskie/reddit"
 	"github.com/kurrik/oauth1a"
 	"github.com/kurrik/twittergo"
+	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Definitions                                                                                 //
+////////////////////////////////////////////////////////////////////////////////////////////////
 
 type tldrItem struct {
 	Content string
@@ -19,29 +25,11 @@ type tldrItem struct {
 }
 
 type TweetBot struct {
-	CommentSet     map[string]bool
-	CommentList    *list.List
-	SubRedditIndex int
-	Credentials    string
-}
-
-var subReddits = []string{
-	"askreddit",
-	"funny",
-	"videos",
-	"games",
-	"iama",
-	"aww",
-	"worldnews",
-	"geek",
-	"nosleep",
-	"programming",
-	"pics",
-	"gaming",
-	"technology",
-	"cyberpunk",
-	"science",
-	"woahdude",
+	commentSet       map[string]bool
+	commentList      *list.List
+	subRedditList    *list.List
+	currentSubReddit *list.Element
+	credentials      string
 }
 
 const (
@@ -51,39 +39,64 @@ const (
 	maxNumberOfTweets = 168
 )
 
-func (bot *TweetBot) RunBot() {
-	if len(bot.Credentials) < 1 {
-		fmt.Println("No twitter credentials specified!")
-	} else {
-		resetCommentSet(bot)
-		for {
-			success := crawlAndTweet(subReddits[bot.SubRedditIndex], bot)
-			bot.SubRedditIndex = (bot.SubRedditIndex + 1) % (len(subReddits) - 1)
-			if success {
-				break
-			}
+const (
+	CommentsSaveFile = "comments.dat"
+	SubRedditFile    = "subreddits.dat"
+)
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Bot Initalization and Loading/Saving                                                        //
+////////////////////////////////////////////////////////////////////////////////////////////////
+func New() *TweetBot {
+	return &TweetBot{
+		commentSet:    make(map[string]bool),
+		commentList:   list.New(),
+		subRedditList: list.New()}
+}
+
+func (bot *TweetBot) InitializeBot(credentials string) {
+	bot.setBotTwitterCredentials(credentials)
+	bot.loadCommentFromFile()
+	err := bot.loadSubreddits()
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (bot *TweetBot) setBotTwitterCredentials(credentials string) {
+	bot.credentials = credentials
+}
+
+func (bot *TweetBot) loadCommentFromFile() {
+	fileLines, err := loadLines(CommentsSaveFile)
+	if err != nil {
+		for i := 0; i < len(fileLines); i++ {
+			tryAddComment(fileLines[i], bot)
 		}
 	}
 }
 
-func New() *TweetBot {
-	return &TweetBot{CommentSet: make(map[string]bool), CommentList: list.New()}
+func (bot *TweetBot) saveCommentToFile() {
+	fileSaveData := ""
+	for comment := bot.commentList.Front(); comment != nil; comment = comment.Next() {
+		fileSaveData = fmt.Sprintf("%s%s\n", fileSaveData, comment.Value.(string))
+	}
+	err := ioutil.WriteFile(CommentsSaveFile, []byte(fileSaveData), 0644)
+	if !noError(err) {
+		fmt.Println("Failed save! Please see error above.")
+	}
 }
 
-func (bot *TweetBot) SetBotTwitterCredentials(credentials string) {
-	bot.Credentials = credentials
-}
-
-func resetCommentSet(bot *TweetBot) {
-	if bot.CommentList.Len() >= maxNumberOfTweets {
+func (bot *TweetBot) resetCommentSet() {
+	if bot.commentList.Len() >= maxNumberOfTweets {
 		// Remove the 84 oldest tweets
 		for {
-			if bot.CommentList.Len() > (maxNumberOfTweets / 2) {
-				commentListItem := bot.CommentList.Back()
+			if bot.commentList.Len() > (maxNumberOfTweets / 2) {
+				commentListItem := bot.commentList.Back()
 				comment := commentListItem.Value.(string)
 				// Remove from both the set and the list
-				delete(bot.CommentSet, comment)
-				bot.CommentList.Remove(commentListItem)
+				delete(bot.commentSet, comment)
+				bot.commentList.Remove(commentListItem)
 			} else {
 				break
 			}
@@ -91,12 +104,64 @@ func resetCommentSet(bot *TweetBot) {
 	}
 }
 
+func (bot *TweetBot) loadSubreddits() error {
+	fileLines, err := loadLines(SubRedditFile)
+	if err != nil {
+		for i := 0; i < len(fileLines); i++ {
+			bot.subRedditList.PushFront(fileLines[i])
+		}
+	}
+
+	if bot.subRedditList.Len() < 1 {
+		return errors.New("Failed to load any subreddits!")
+	}
+
+	return nil
+}
+
+func (bot *TweetBot) getSubReddit() string {
+
+	// If the current subreddit is empty, go back to the
+	// start of the list
+	if bot.currentSubReddit == nil {
+		bot.currentSubReddit = bot.subRedditList.Front()
+	}
+
+	subRedditName := bot.currentSubReddit.Value.(string)
+
+	// After the subreddit's name is retrieved, move onto the next
+	if bot.currentSubReddit != nil {
+		bot.currentSubReddit = bot.currentSubReddit.Next()
+	}
+
+	return subRedditName
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Processing and Tweeting                                                                     //
+////////////////////////////////////////////////////////////////////////////////////////////////
+func (bot *TweetBot) RunBot() {
+	if len(bot.credentials) < 1 {
+		fmt.Println("No twitter credentials specified!")
+	} else {
+		bot.resetCommentSet()
+		for {
+			success := crawlAndTweet(bot.getSubReddit(), bot)
+			if success {
+				// On a successful run save the updated tweets
+				bot.saveCommentToFile()
+				break
+			}
+		}
+	}
+}
+
 func tryAddComment(comment string, bot *TweetBot) bool {
-	if bot.CommentSet[comment] {
+	if bot.commentSet[comment] {
 		return false
 	}
-	bot.CommentSet[comment] = true
-	bot.CommentList.PushFront(comment)
+	bot.commentSet[comment] = true
+	bot.commentList.PushFront(comment)
 	return true
 }
 
@@ -142,7 +207,6 @@ func tryTweetComment(message string, bot *TweetBot) bool {
 			if noError(err) {
 				success = true
 			}
-
 		}
 	}
 	return success
@@ -185,11 +249,15 @@ func extractTLDR(body string) (bool, string) {
 	return false, ""
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Twitter Specific                                                                            //
+////////////////////////////////////////////////////////////////////////////////////////////////
+
 // The loading of credentials, the login, and tweeting functionality
 // has been addapted from the example provided with github.com/kurrik/twittergo
 func logIn(bot *TweetBot) (client *twittergo.Client, err error) {
-	if len(bot.Credentials) > 0 {
-		lines := strings.Split(string(bot.Credentials), "\n")
+	if len(bot.credentials) > 0 {
+		lines := strings.Split(string(bot.credentials), "\n")
 		config := &oauth1a.ClientConfig{
 			ConsumerKey:    lines[0],
 			ConsumerSecret: lines[1],
@@ -212,10 +280,22 @@ func tweetMessage(message string, client *twittergo.Client) error {
 	return err
 }
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
+// Utility Methods                                                                             //
+////////////////////////////////////////////////////////////////////////////////////////////////
+
 func noError(err error) bool {
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
 		return false
 	}
 	return true
+}
+
+func loadLines(filename string) ([]string, error) {
+	fileData, err := ioutil.ReadFile(filename)
+	if noError(err) {
+		return strings.Split(string(fileData), "\n"), nil
+	}
+	return nil, err
 }
