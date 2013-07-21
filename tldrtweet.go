@@ -69,7 +69,7 @@ func (bot *TweetBot) setBotTwitterCredentials(credentials string) {
 
 func (bot *TweetBot) loadCommentFromFile() {
 	fileLines, err := loadLines(CommentsSaveFile)
-	if err != nil {
+	if err == nil {
 		for i := 0; i < len(fileLines); i++ {
 			tryAddComment(fileLines[i], bot)
 		}
@@ -106,7 +106,7 @@ func (bot *TweetBot) resetCommentSet() {
 
 func (bot *TweetBot) loadSubreddits() error {
 	fileLines, err := loadLines(SubRedditFile)
-	if err != nil {
+	if err == nil {
 		for i := 0; i < len(fileLines); i++ {
 			bot.subRedditList.PushFront(fileLines[i])
 		}
@@ -115,7 +115,6 @@ func (bot *TweetBot) loadSubreddits() error {
 	if bot.subRedditList.Len() < 1 {
 		return errors.New("Failed to load any subreddits!")
 	}
-
 	return nil
 }
 
