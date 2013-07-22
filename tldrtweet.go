@@ -145,7 +145,7 @@ func (bot *TweetBot) RunBot() {
 	} else {
 		bot.resetCommentSet()
 		for {
-			success := crawlAndTweet(bot.getSubReddit(), bot)
+			success := crawlAndTweet(bot)
 			if success {
 				// On a successful run save the updated tweets
 				bot.saveCommentToFile()
@@ -164,8 +164,9 @@ func tryAddComment(comment string, bot *TweetBot) bool {
 	return true
 }
 
-func crawlAndTweet(subReddit string, bot *TweetBot) bool {
+func crawlAndTweet(bot *TweetBot) bool {
 	success := false
+	subReddit := bot.getSubReddit()
 	posts, err := reddit.SubredditHeadlines(subReddit)
 	fmt.Printf("Crawling /r/%s\n", subReddit)
 	if noError(err) {
