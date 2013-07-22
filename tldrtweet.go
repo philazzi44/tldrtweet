@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -71,7 +72,7 @@ func (bot *TweetBot) loadCommentFromFile() {
 	fileLines, err := loadLines(CommentsSaveFile)
 	if err == nil {
 		for i := 0; i < len(fileLines); i++ {
-			tryAddComment(fileLines[i], bot)
+			tryAddComment(bot, fileLines[i])
 		}
 	}
 }
@@ -155,65 +156,44 @@ func (bot *TweetBot) RunBot() {
 	}
 }
 
-func tryAddComment(comment string, bot *TweetBot) bool {
-	if bot.commentSet[comment] {
-		return false
-	}
-	bot.commentSet[comment] = true
-	bot.commentList.PushFront(comment)
-	return true
-}
-
 func crawlAndTweet(bot *TweetBot) bool {
 	success := false
 	subReddit := bot.getSubReddit()
 	posts, err := reddit.SubredditHeadlines(subReddit)
 	fmt.Printf("Crawling /r/%s\n", subReddit)
 	if noError(err) {
-		tldrItemList := list.New()
-		for _, post := range posts {
-			// Sleep for 2 seconds as a niave way to keep the number of hits down to a max of 30 a min
-			time.Sleep(2 * time.Second)
-			comments, err := reddit.GetComments(post)
-			if noError(err) {
-				processComments(comments, tldrItemList)
-			}
-		}
-		success = tryTweetItems(tldrItemList, bot)
+		tldrItemChan := make(chan tldrItem)
+		// Spawn a goroutine to crawl the posts
+		go crawlPosts(posts, tldrItemChan)
+		success = tryTweetItems(bot, tldrItemChan)
 	}
 	return success
 }
 
-func tryTweetItems(list *list.List, bot *TweetBot) bool {
-	success := false
-	if list.Len() > 0 {
-		for tweetItem := list.Front(); tweetItem != nil; tweetItem = tweetItem.Next() {
-			success = tryTweetComment(tweetItem.Value.(tldrItem).Content, bot)
-			if success {
-				break
-			}
-		}
+func crawlPosts(posts reddit.Headlines, tldrItemChan chan tldrItem) {
+	var wg sync.WaitGroup
+	for _, post := range posts {
+		// Sleep for 2 seconds as a niave way to keep the number of hits down to a max of 30 a min
+		time.Sleep(2 * time.Second)
+		// After the sleep spawn off a new goroutine to read/parse the comments
+		go getAndProcessPosts(post, tldrItemChan, &wg)
 	}
-	return success
+	// Once all of the goroutines have finished close the channel
+	wg.Wait()
+	close(tldrItemChan)
 }
 
-func tryTweetComment(message string, bot *TweetBot) bool {
-	success := false
-	if tryAddComment(message, bot) {
-		fmt.Printf("Tweet: %s\n", message)
-		client, err := logIn(bot)
-		if noError(err) {
-			err = tweetMessage(message, client)
-			if noError(err) {
-				success = true
-			}
-		}
+func getAndProcessPosts(post *reddit.Headline, tldrItemChan chan tldrItem, wg *sync.WaitGroup) {
+	wg.Add(1)
+	comments, err := reddit.GetComments(post)
+	if noError(err) {
+		processComments(comments, tldrItemChan)
 	}
-	return success
+	wg.Done()
 }
 
-func processComments(comments reddit.Comments, list *list.List) {
-	// Simple search and print of tldr comments
+func processComments(comments reddit.Comments, tldrItemChan chan tldrItem) {
+	// Simple search and print of tldr comments in parallel
 	for _, comment := range comments {
 		formattedBody := strings.ToLower(comment.Body)
 		found, sentence := extractTLDR(formattedBody)
@@ -221,7 +201,7 @@ func processComments(comments reddit.Comments, list *list.List) {
 		if found && len(sentence) < tweetSize {
 			foundItem := tldrItem{Content: sentence, Author: comment.Author, Created: comment.Created}
 			fmt.Printf("%v\n", foundItem)
-			list.PushBack(foundItem)
+			tldrItemChan <- foundItem
 		}
 	}
 }
@@ -247,6 +227,38 @@ func extractTLDR(body string) (bool, string) {
 		}
 	}
 	return false, ""
+}
+
+func tryAddComment(bot *TweetBot, comment string) bool {
+	if bot.commentSet[comment] {
+		return false
+	}
+	bot.commentSet[comment] = true
+	bot.commentList.PushFront(comment)
+	return true
+}
+
+func tryTweetItems(bot *TweetBot, tldrItemChan chan tldrItem) bool {
+	for tweetItem := range tldrItemChan {
+		if tryTweetComment(bot, tweetItem.Content) {
+			return true
+		}
+	}
+	return false
+}
+
+func tryTweetComment(bot *TweetBot, message string) bool {
+	if tryAddComment(bot, message) {
+		fmt.Printf("Tweet: %s\n", message)
+		client, err := logIn(bot)
+		if noError(err) {
+			err = tweetMessage(message, client)
+			if noError(err) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
