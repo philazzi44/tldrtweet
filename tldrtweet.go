@@ -165,7 +165,16 @@ func crawlAndTweet(bot *TweetBot) bool {
 		tldrItemChan := make(chan tldrItem)
 		// Spawn a goroutine to crawl the posts
 		go crawlPosts(posts, tldrItemChan)
-		success = tryTweetItems(bot, tldrItemChan)
+		tweetItemList := getTweetItems(bot, tldrItemChan)
+		// For the moment, just go through the list of generated items
+		if tweetItemList.Len() > 0 {
+			for item := tweetItemList.Front(); item != nil; item = item.Next() {
+				if tryTweetComment(bot, item.Value.(tldrItem).Content) {
+					success = true
+					break
+				}
+			}
+		}
 	}
 	return success
 }
@@ -238,13 +247,14 @@ func tryAddComment(bot *TweetBot, comment string) bool {
 	return true
 }
 
-func tryTweetItems(bot *TweetBot, tldrItemChan chan tldrItem) bool {
+func getTweetItems(bot *TweetBot, tldrItemChan chan tldrItem) *list.List {
+	// Aggregate all of the possible tweets into a list, keep adding items
+	// until the channel is closed
+	tweetList := list.New()
 	for tweetItem := range tldrItemChan {
-		if tryTweetComment(bot, tweetItem.Content) {
-			return true
-		}
+		tweetList.PushFront(tweetItem)
 	}
-	return false
+	return tweetList
 }
 
 func tryTweetComment(bot *TweetBot, message string) bool {
