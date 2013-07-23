@@ -13,7 +13,8 @@ func TestBot(t *testing.T) {
 	} else {
 		credentials := string(fileData)
 		bot := New()
-		bot.SetBotTwitterCredentials(credentials)
-		bot.RunBot()
+		bot.InitializeBot(credentials)
+		bot.RunBotCrawl()
+		bot.RunBotTweet()
 	}
 }

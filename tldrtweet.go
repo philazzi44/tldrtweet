@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"github.com/deckarep/golang-set"
 	"github.com/jzelinskie/reddit"
 	"github.com/kurrik/oauth1a"
 	"github.com/kurrik/twittergo"
@@ -26,11 +27,12 @@ type tldrItem struct {
 }
 
 type TweetBot struct {
-	commentSet       map[string]bool
-	commentList      *list.List
-	subRedditList    *list.List
-	currentSubReddit *list.Element
-	credentials      string
+	commentSet          mapset.Set
+	potentialCommentSet mapset.Set
+	commentList         *list.List
+	subRedditList       *list.List
+	currentSubReddit    *list.Element
+	credentials         string
 }
 
 const (
@@ -38,11 +40,14 @@ const (
 	tweetSize = 140
 	// 24 Tweets Per Day * 7 Days A Week = 168 Tweets A Week
 	maxNumberOfTweets = 168
+	// Keep the number low to encourage at least one day of freshness
+	maxNumberOFPotentialTweets = 24
 )
 
 const (
-	CommentsSaveFile = "comments.dat"
-	SubRedditFile    = "subreddits.dat"
+	CommentsSaveFile      = "comments.dat"
+	SubRedditFile         = "subreddits.dat"
+	PotentialCommentsFile = "potentialComments.dat"
 )
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -50,9 +55,10 @@ const (
 ////////////////////////////////////////////////////////////////////////////////////////////////
 func New() *TweetBot {
 	return &TweetBot{
-		commentSet:    make(map[string]bool),
-		commentList:   list.New(),
-		subRedditList: list.New()}
+		commentSet:          mapset.NewSet(),
+		potentialCommentSet: mapset.NewSet(),
+		commentList:         list.New(),
+		subRedditList:       list.New()}
 }
 
 func (bot *TweetBot) InitializeBot(credentials string) {
@@ -96,7 +102,7 @@ func (bot *TweetBot) resetCommentSet() {
 				commentListItem := bot.commentList.Back()
 				comment := commentListItem.Value.(string)
 				// Remove from both the set and the list
-				delete(bot.commentSet, comment)
+				bot.commentSet.Remove(comment)
 				bot.commentList.Remove(commentListItem)
 			} else {
 				break
@@ -140,43 +146,35 @@ func (bot *TweetBot) getSubReddit() string {
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // Processing and Tweeting                                                                     //
 ////////////////////////////////////////////////////////////////////////////////////////////////
-func (bot *TweetBot) RunBot() {
-	if len(bot.credentials) < 1 {
+func (bot *TweetBot) RunBotCrawl() {
+	crawl(bot)
+}
+
+func (bot *TweetBot) RunBotTweet() {
+	bot.resetCommentSet()
+	switch {
+	case len(bot.credentials) < 1:
 		fmt.Println("No twitter credentials specified!")
-	} else {
-		bot.resetCommentSet()
-		for {
-			success := crawlAndTweet(bot)
-			if success {
-				// On a successful run save the updated tweets
-				bot.saveCommentToFile()
-				break
-			}
-		}
+	case bot.potentialCommentSet.Size() > 0:
+		tryTweet(bot)
+	default:
+		fmt.Println("No tweets available, starting unscheduled crawl!")
+		bot.RunBotCrawl()
 	}
 }
 
-func crawlAndTweet(bot *TweetBot) bool {
-	success := false
+func crawl(bot *TweetBot) {
+	fmt.Println("Starting crawl!")
 	subReddit := bot.getSubReddit()
 	posts, err := reddit.SubredditHeadlines(subReddit)
 	fmt.Printf("Crawling /r/%s\n", subReddit)
 	if noError(err) {
 		tldrItemChan := make(chan tldrItem)
-		// Spawn a goroutine to crawl the posts
+		// Spawn a goroutine to crawl the post
 		go crawlPosts(posts, tldrItemChan)
-		tweetItemList := getTweetItems(bot, tldrItemChan)
-		// For the moment, just go through the list of generated items
-		if tweetItemList.Len() > 0 {
-			for item := tweetItemList.Front(); item != nil; item = item.Next() {
-				if tryTweetComment(bot, item.Value.(tldrItem).Content) {
-					success = true
-					break
-				}
-			}
-		}
+		aggregatePotentialTweetComments(bot, tldrItemChan)
 	}
-	return success
+	fmt.Println("Stopping crawl!")
 }
 
 func crawlPosts(posts reddit.Headlines, tldrItemChan chan tldrItem) {
@@ -239,22 +237,38 @@ func extractTLDR(body string) (bool, string) {
 }
 
 func tryAddComment(bot *TweetBot, comment string) bool {
-	if bot.commentSet[comment] {
+	if bot.commentSet.Contains(comment) {
 		return false
 	}
-	bot.commentSet[comment] = true
+	bot.commentSet.Add(comment)
 	bot.commentList.PushFront(comment)
 	return true
 }
 
-func getTweetItems(bot *TweetBot, tldrItemChan chan tldrItem) *list.List {
+func aggregatePotentialTweetComments(bot *TweetBot, tldrItemChan chan tldrItem) {
 	// Aggregate all of the possible tweets into a list, keep adding items
 	// until the channel is closed
-	tweetList := list.New()
+	foundTweetCount := 0
 	for tweetItem := range tldrItemChan {
-		tweetList.PushFront(tweetItem)
+		if bot.potentialCommentSet.Size() <= maxNumberOFPotentialTweets {
+			bot.potentialCommentSet.Add(tweetItem.Content)
+			foundTweetCount++
+		}
 	}
-	return tweetList
+	fmt.Printf("Added %d items to the set of potential tweets\n", foundTweetCount)
+}
+
+func tryTweet(bot *TweetBot) {
+	for potentialComment := range bot.potentialCommentSet {
+		if tryTweetComment(bot, potentialComment.(string)) {
+			// Save the tweeted comments to a file
+			bot.saveCommentToFile()
+			// Remove the tweeted item from the list of potential tweets
+			bot.potentialCommentSet.Remove(potentialComment)
+			break
+		}
+	}
+
 }
 
 func tryTweetComment(bot *TweetBot, message string) bool {
