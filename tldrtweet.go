@@ -45,9 +45,8 @@ const (
 )
 
 const (
-	CommentsSaveFile      = "comments.dat"
-	SubRedditFile         = "subreddits.dat"
-	PotentialCommentsFile = "potentialComments.dat"
+	CommentsSaveFile = "comments.dat"
+	SubRedditFile    = "subreddits.dat"
 )
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
