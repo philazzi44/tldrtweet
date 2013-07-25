@@ -42,6 +42,8 @@ const (
 	maxNumberOfTweets = 168
 	// Keep the number low to encourage at least one day of freshness
 	maxNumberOFPotentialTweets = 24
+	// Crawl distance - number of reddits covered in a crawl
+	crawlDistance = 5
 )
 
 const (
@@ -163,17 +165,20 @@ func (bot *TweetBot) RunBotTweet() {
 }
 
 func crawl(bot *TweetBot) {
-	fmt.Println("Starting crawl!")
-	subReddit := bot.getSubReddit()
-	posts, err := reddit.SubredditHeadlines(subReddit)
-	fmt.Printf("Crawling /r/%s\n", subReddit)
-	if noError(err) {
-		tldrItemChan := make(chan tldrItem)
-		// Spawn a goroutine to crawl the post
-		go crawlPosts(posts, tldrItemChan)
-		aggregatePotentialTweetComments(bot, tldrItemChan)
+	startTime := time.Now()
+	fmt.Printf("Starting crawl! Start Time: %s \n", startTime.Local().String())
+	for i := 0; i < crawlDistance; i++ {
+		subReddit := bot.getSubReddit()
+		posts, err := reddit.SubredditHeadlines(subReddit)
+		fmt.Printf("Crawling /r/%s\n", subReddit)
+		if noError(err) {
+			tldrItemChan := make(chan tldrItem)
+			// Spawn a goroutine to crawl the post
+			go crawlPosts(posts, tldrItemChan)
+			aggregatePotentialTweetComments(bot, tldrItemChan)
+		}
 	}
-	fmt.Println("Stopping crawl!")
+	fmt.Printf("Stopping crawl! Time Elapsed: %f", time.Since(startTime))
 }
 
 func crawlPosts(posts reddit.Headlines, tldrItemChan chan tldrItem) {
@@ -249,7 +254,8 @@ func aggregatePotentialTweetComments(bot *TweetBot, tldrItemChan chan tldrItem) 
 	// until the channel is closed
 	foundTweetCount := 0
 	for tweetItem := range tldrItemChan {
-		if bot.potentialCommentSet.Size() <= maxNumberOFPotentialTweets {
+		if bot.potentialCommentSet.Size() <= maxNumberOFPotentialTweets &&
+			!bot.commentSet.Contains(tweetItem.Content) {
 			bot.potentialCommentSet.Add(tweetItem.Content)
 			foundTweetCount++
 		}
