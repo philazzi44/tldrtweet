@@ -178,7 +178,7 @@ func crawl(bot *TweetBot) {
 			aggregatePotentialTweetComments(bot, tldrItemChan)
 		}
 	}
-	fmt.Printf("Stopping crawl! Time Elapsed: %f", time.Since(startTime))
+	fmt.Printf("Stopping crawl! Time Elapsed: %f", time.Since(startTime).Minutes())
 }
 
 func crawlPosts(posts reddit.Headlines, tldrItemChan chan tldrItem) {
